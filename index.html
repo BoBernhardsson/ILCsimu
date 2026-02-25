@@ -40,7 +40,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Iterative Learning Control (ILC) — Browser Demo (Figure 1 only)</h1>
+  <h1>Iterative Learning Control (ILC) — Browser Demo </h1>
 
   <div class="grid">
     <div class="card">
@@ -70,7 +70,7 @@
 
       <div class="kv">
         <div class="pill">h = 0.1 s</div>
-        <div class="pill">t ∈ [0, 10] s</div>
+        <div class="pill">plot: 0–10 s (sim: 0–15 s)</div>
         <div class="pill">itermax = 25</div>
       </div>
 
@@ -95,20 +95,34 @@
   // ----------------------------
   // Parameters / time grid
   // ----------------------------
-  const h = 0.1;
-  const t = [];
-  for (let x = 0; x <= 10 + 1e-12; x += h) t.push(+x.toFixed(10));
-  const N = t.length;
-  const itermax = 25;
+  
 
-  // Reference yr = max(0, min(1, -5:h:5))
-  const yr = t.map((_, i) => {
-    const v = -5 + i*h; // matches -5:h:5 with N=101
+    const h = 0.1;
+
+    const Tplot = 10;
+    const Tsim  = 15;
+
+    // simulate 0..15 seconds
+    const tsim = [];
+    for (let x = 0; x <= Tsim + 1e-12; x += h) {
+    tsim.push(+x.toFixed(10));
+    }
+
+    // plot only 0..10 seconds
+    const tplot = tsim.filter(x => x <= Tplot);
+
+    const N = tsim.length;
+    const Nplot = tplot.length;
+    const itermax = 25;
+
+  // Reference yr = max(0, min(1, -5:h:5)) extended to Tsim
+  const yr = tsim.map((_, i) => {
+    const v = -5 + i*h;
     return Math.max(0, Math.min(1, v));
   });
 
   // u1 = (t > 4.5)
-  const u1 = t.map(tt => (tt > 4.5 ? 1 : 0));
+  const u1 = tsim.map(tt => (tt > 4.5 ? 1 : 0));
 
   // ----------------------------
   // Small matrix utilities (for ZOH discretization via expm)
@@ -389,14 +403,31 @@
     if (!sim) return;
     const it = iterIdx1Based - 1;
 
-    const yrS = stairsXY(t, yr);
-    const yS  = stairsXY(t, sim.y[it]);
-    const uS  = stairsXY(t, sim.u[it]);
+    const yrS = stairsXY(tplot, yr.slice(0, Nplot));
+    const yS  = stairsXY(tplot, sim.y[it].slice(0, Nplot));
+    const uS  = stairsXY(tplot, sim.u[it].slice(0, Nplot));
+
+
 
     const data = [
-      { ...yrS, mode: "lines", name: "yd (yr)", line: {width: 3}, hovertemplate: "t=%{x:.2f}<br>yd=%{y:.3f}<extra></extra>" },
-      { ...yS,  mode: "lines", name: "y",       line: {width: 3}, hovertemplate: "t=%{x:.2f}<br>y=%{y:.3f}<extra></extra>" },
-      { ...uS,  mode: "lines", name: "u",       line: {width: 3}, hovertemplate: "t=%{x:.2f}<br>u=%{y:.3f}<extra></extra>" },
+        { 
+            ...yrS,
+            mode: "lines",
+            name: "yd (yr)",
+            line: { width: 3, color: "#ffffff" }   // white
+        },
+        { 
+            ...yS,
+            mode: "lines",
+            name: "y",
+            line: { width: 3, color: "#ff4d4d" }   // red
+        },
+        { 
+            ...uS,
+            mode: "lines",
+            name: "u",
+            line: { width: 3, color: "#4da6ff" }   // blue
+        }
     ];
 
     const layout = {
@@ -437,9 +468,21 @@
     stopAnim();
     animOn = true;
     animateBtn.textContent = "Stop";
+
+    // Restart animation from the beginning each time you press Animate.
+    iterEl.value = "1";
+    syncLabels();
+    renderIteration(1);
     animTimer = setInterval(() => {
-      let v = parseInt(iterEl.value,10);
-      v = (v >= itermax) ? 1 : (v + 1);
+      let v = parseInt(iterEl.value, 10);
+
+      // Advance one iteration per tick; stop when reaching the last iteration.
+      if (v >= itermax) {
+        stopAnim();
+        return;
+      }
+
+      v = v + 1;
       iterEl.value = String(v);
       syncLabels();
       renderIteration(v);
