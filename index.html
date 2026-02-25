@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Iterative Learning Control (ILC) Demo</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root { --bg:#0b0f19; --panel:#121a2a; --text:#e9eefc; --muted:#a8b3d6; --accent:#6aa6ff; }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 18px; }
+    h1 { font-size: 18px; margin: 0 0 10px; font-weight: 650; }
+    .grid { display: grid; grid-template-columns: 360px 1fr; gap: 14px; align-items: start; }
+    .card { background: var(--panel); border-radius: 14px; padding: 14px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+    .row { display:flex; gap:10px; align-items:center; }
+    label { display:block; font-size: 12px; color: var(--muted); margin-top: 10px; margin-bottom: 6px; }
+    input[type="range"] { width: 100%; }
+    input[type="number"] { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,.12); background: rgba(0,0,0,.25); color: var(--text); }
+    .btnbar { display:flex; gap:10px; margin-top: 12px; }
+    button {
+      flex: 1;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,.15);
+      background: rgba(106,166,255,.18);
+      color: var(--text);
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:active { transform: translateY(1px); }
+    .small { font-size: 12px; color: var(--muted); line-height: 1.45; }
+    #plot { height: 620px; }
+    .kv { display:flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+    .pill { padding: 6px 10px; border-radius: 999px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.10); }
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: 1fr; }
+      #plot { height: 520px; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Iterative Learning Control (ILC) — Browser Demo (Figure 1 only)</h1>
+
+  <div class="grid">
+    <div class="card">
+      <div class="small">
+        This reproduces your MATLAB loop:
+        <code>u_{i+1} = filtfilt(lp, u_i + k * shift(e_i, delta))</code>
+        and plots <code>yr</code>, <code>y</code>, <code>u</code> as stairs (Figure 1).
+        Figure(10) is omitted.
+      </div>
+
+      <label for="k">k (learning gain): <span id="kVal"></span></label>
+      <input id="k" type="range" min="0" max="2" step="0.01" value="1">
+
+      <label for="delta">delta (samples): <span id="dVal"></span></label>
+      <input id="delta" type="range" min="0" max="25" step="1" value="6">
+
+      <label for="wf">wf (rad/s, LP cutoff): <span id="wfVal"></span></label>
+      <input id="wf" type="range" min="0.5" max="60" step="0.5" value="20">
+
+      <label for="iter">Displayed iteration: <span id="iterVal"></span></label>
+      <input id="iter" type="range" min="1" max="25" step="1" value="1">
+
+      <div class="btnbar">
+        <button id="recompute">Recompute</button>
+        <button id="animate">Animate</button>
+      </div>
+
+      <div class="kv">
+        <div class="pill">h = 0.1 s</div>
+        <div class="pill">t ∈ [0, 10] s</div>
+        <div class="pill">itermax = 25</div>
+      </div>
+
+      <div class="small" style="margin-top:10px;">
+        Notes:
+        <ul style="margin:8px 0 0 18px; padding:0;">
+          <li><code>filtfilt</code> is implemented as forward IIR filter + reverse IIR filter (zero initial state).</li>
+          <li>Plant discretization is exact ZOH via matrix exponential.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <div id="plot"></div>
+      <div class="small" id="status" style="margin-top:10px;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ----------------------------
+  // Parameters / time grid
+  // ----------------------------
+  const h = 0.1;
+  const t = [];
+  for (let x = 0; x <= 10 + 1e-12; x += h) t.push(+x.toFixed(10));
+  const N = t.length;
+  const itermax = 25;
+
+  // Reference yr = max(0, min(1, -5:h:5))
+  const yr = t.map((_, i) => {
+    const v = -5 + i*h; // matches -5:h:5 with N=101
+    return Math.max(0, Math.min(1, v));
+  });
+
+  // u1 = (t > 4.5)
+  const u1 = t.map(tt => (tt > 4.5 ? 1 : 0));
+
+  // ----------------------------
+  // Small matrix utilities (for ZOH discretization via expm)
+  // ----------------------------
+  const eye = (n) => Array.from({length:n}, (_,i)=>Array.from({length:n}, (_,j)=>(i===j?1:0)));
+  const zeros = (r,c) => Array.from({length:r}, ()=>Array.from({length:c}, ()=>0));
+
+  const matAdd = (A,B) => A.map((row,i)=>row.map((v,j)=>v+B[i][j]));
+  const matSub = (A,B) => A.map((row,i)=>row.map((v,j)=>v-B[i][j]));
+  const matScale = (A,s) => A.map(row=>row.map(v=>v*s));
+
+  const matMul = (A,B) => {
+    const r=A.length, k=A[0].length, c=B[0].length;
+    const out=zeros(r,c);
+    for (let i=0;i<r;i++){
+      for (let j=0;j<c;j++){
+        let sum=0;
+        for (let p=0;p<k;p++) sum += A[i][p]*B[p][j];
+        out[i][j]=sum;
+      }
+    }
+    return out;
+  };
+
+  const matNorm1 = (A) => {
+    // 1-norm = max column sum
+    const r=A.length, c=A[0].length;
+    let max=0;
+    for (let j=0;j<c;j++){
+      let s=0;
+      for (let i=0;i<r;i++) s += Math.abs(A[i][j]);
+      max = Math.max(max,s);
+    }
+    return max;
+  };
+
+  const matCopy = (A) => A.map(row=>row.slice());
+
+  // Gauss-Jordan inverse (small matrices)
+  const matInv = (A) => {
+    const n=A.length;
+    let M = A.map((row,i)=>row.concat(eye(n)[i]));
+    // pivot
+    for (let i=0;i<n;i++){
+      // find best pivot
+      let piv=i;
+      for (let r=i+1;r<n;r++) if (Math.abs(M[r][i])>Math.abs(M[piv][i])) piv=r;
+      if (Math.abs(M[piv][i]) < 1e-15) throw new Error("Matrix nearly singular in inversion.");
+      if (piv!==i){ const tmp=M[i]; M[i]=M[piv]; M[piv]=tmp; }
+      // normalize
+      const div=M[i][i];
+      for (let j=0;j<2*n;j++) M[i][j]/=div;
+      // eliminate
+      for (let r=0;r<n;r++){
+        if (r===i) continue;
+        const f=M[r][i];
+        for (let j=0;j<2*n;j++) M[r][j]-=f*M[i][j];
+      }
+    }
+    return M.map(row=>row.slice(n));
+  };
+
+  // Matrix exponential via scaling & squaring + Pade (order 6)
+  // Based on classic Higham-style approach (simple, fine for 3x3/4x4 here).
+  const expm = (A) => {
+    const n=A.length;
+    const I = eye(n);
+    const norm = matNorm1(A);
+    const theta = 3.0; // conservative for order-6
+    const s = Math.max(0, Math.ceil(Math.log2(norm/theta)));
+    const As = matScale(A, 1/Math.pow(2,s));
+
+    // Pade(6) coefficients
+    const c = [1.0,
+      0.5,
+      0.12,
+      0.018333333333333333,
+      0.0019927536231884053,
+      0.00016059043836821615,
+      0.000009390852392754953
+    ];
+
+    const A2 = matMul(As, As);
+    const A4 = matMul(A2, A2);
+    const A6 = matMul(A4, A2);
+
+    // U = As*(c1*I + c3*A2 + c5*A4)
+    let U = matAdd(matScale(I, c[1]), matAdd(matScale(A2, c[3]), matScale(A4, c[5])));
+    U = matMul(As, U);
+
+    // V = c0*I + c2*A2 + c4*A4 + c6*A6
+    let V = matAdd(matScale(I, c[0]),
+            matAdd(matScale(A2, c[2]),
+            matAdd(matScale(A4, c[4]), matScale(A6, c[6]))));
+
+    const P = matAdd(V, U);
+    const Q = matSub(V, U);
+    const R = matMul(matInv(Q), P);
+
+    // squaring
+    let X = R;
+    for (let i=0;i<s;i++) X = matMul(X, X);
+    return X;
+  };
+
+  // Exact ZOH cont2discrete using augmented matrix expm:
+  // exp([A B; 0 0]*h) = [Ad Bd; 0 I]
+  const c2dZOH = (A,B,h) => {
+    const n = A.length;
+    const m = B[0].length;
+    const M = zeros(n+m, n+m);
+
+    for (let i=0;i<n;i++){
+      for (let j=0;j<n;j++) M[i][j] = A[i][j];
+      for (let j=0;j<m;j++) M[i][n+j] = B[i][j];
+    }
+    // lower block already zeros
+
+    const E = expm(matScale(M, h));
+    const Ad = zeros(n,n);
+    const Bd = zeros(n,m);
+
+    for (let i=0;i<n;i++){
+      for (let j=0;j<n;j++) Ad[i][j] = E[i][j];
+      for (let j=0;j<m;j++) Bd[i][j] = E[i][n+j];
+    }
+    return {Ad, Bd};
+  };
+
+  // ----------------------------
+  // Plant model (matches your MATLAB g)
+  // g(s) = 16 / (s^3 + 1.8 s^2 + 16.8 s + 16)
+  // Controllable canonical form:
+  // xdot = A x + B u, y = C x
+  // ----------------------------
+  const A = [
+    [0,   1,   0],
+    [0,   0,   1],
+    [-16, -16.8, -1.8]
+  ];
+  const B = [
+    [0],
+    [0],
+    [1]
+  ];
+  const C = [16, 0, 0];
+  const D = 0;
+
+  const {Ad, Bd} = c2dZOH(A, B, h);
+
+  // Discrete simulation y = lsim(gd,u,t) for discrete state-space
+  function lsimDiscrete(u) {
+    let x = [0,0,0];
+    const y = new Array(u.length);
+    for (let k=0;k<u.length;k++){
+      // y[k] = Cx + D u
+      y[k] = C[0]*x[0] + C[1]*x[1] + C[2]*x[2] + D*u[k];
+      // x = Ad x + Bd u
+      const xnew = [
+        Ad[0][0]*x[0] + Ad[0][1]*x[1] + Ad[0][2]*x[2] + Bd[0][0]*u[k],
+        Ad[1][0]*x[0] + Ad[1][1]*x[1] + Ad[1][2]*x[2] + Bd[1][0]*u[k],
+        Ad[2][0]*x[0] + Ad[2][1]*x[1] + Ad[2][2]*x[2] + Bd[2][0]*u[k]
+      ];
+      x = xnew;
+    }
+    return y;
+  }
+
+  // ----------------------------
+  // IIR filter + filtfilt (forward-backward)
+  // ----------------------------
+  function filterIIR(b, a, x) {
+    // a[0] assumed 1
+    const y = new Array(x.length).fill(0);
+    for (let n=0;n<x.length;n++){
+      let acc = 0;
+      for (let i=0;i<b.length;i++){
+        if (n-i >= 0) acc += b[i]*x[n-i];
+      }
+      for (let i=1;i<a.length;i++){
+        if (n-i >= 0) acc -= a[i]*y[n-i];
+      }
+      y[n] = acc;
+    }
+    return y;
+  }
+
+  function filtfilt(b, a, x) {
+    const y1 = filterIIR(b, a, x);
+    const rev = y1.slice().reverse();
+    const y2 = filterIIR(b, a, rev);
+    return y2.reverse();
+  }
+
+  // Low-pass lp(s)=wf/(s+wf) exact discrete: y[n]=alpha*y[n-1]+(1-alpha)u[n]
+  function lpCoeffs(wf) {
+    const alpha = Math.exp(-wf*h);
+    const b = [1 - alpha];
+    const a = [1, -alpha];
+    return {b, a};
+  }
+
+  // ----------------------------
+  // ILC simulation
+  // ----------------------------
+  function simulateILC({kGain, delta, wf}) {
+    const {b, a} = lpCoeffs(wf);
+
+    const u = Array.from({length: itermax}, () => new Array(N).fill(0));
+    const y = Array.from({length: itermax}, () => new Array(N).fill(0));
+    const e = Array.from({length: itermax}, () => new Array(N).fill(0));
+
+    u[0] = u1.slice();
+    y[0] = lsimDiscrete(u[0]);
+    for (let i=0;i<N;i++) e[0][i] = yr[i] - y[0][i];
+
+    for (let it=0; it<itermax-1; it++){
+      // shift error forward by delta: [e(delta+1:end); zeros(delta)]
+      const sh = new Array(N).fill(0);
+      for (let i=0;i<N-delta;i++) sh[i] = e[it][i+delta];
+      // u + k*shift(e)
+      const uplus = new Array(N);
+      for (let i=0;i<N;i++) uplus[i] = u[it][i] + kGain*sh[i];
+
+      u[it+1] = filtfilt(b, a, uplus);
+      y[it+1] = lsimDiscrete(u[it+1]);
+      for (let i=0;i<N;i++) e[it+1][i] = yr[i] - y[it+1][i];
+    }
+
+    // Some quick metrics
+    const last = itermax-1;
+    const norm2 = (arr) => Math.sqrt(arr.reduce((s,v)=>s+v*v,0));
+    return {
+      u, y, e,
+      metrics: {
+        eNorm1: norm2(e[0]),
+        eNormLast: norm2(e[last])
+      }
+    };
+  }
+
+  // ----------------------------
+  // Plotly "stairs" helper
+  // ----------------------------
+  function stairsXY(t, x) {
+    // emulate MATLAB stairs: horizontal then vertical steps
+    const xs = [], ys = [];
+    for (let i=0;i<t.length;i++){
+      if (i === 0) { xs.push(t[i]); ys.push(x[i]); continue; }
+      xs.push(t[i]);   ys.push(x[i-1]);
+      xs.push(t[i]);   ys.push(x[i]);
+    }
+    return {x: xs, y: ys};
+  }
+
+  // ----------------------------
+  // UI wiring
+  // ----------------------------
+  const el = (id) => document.getElementById(id);
+  const kEl = el("k"), dEl = el("delta"), wfEl = el("wf"), iterEl = el("iter");
+  const kVal = el("kVal"), dVal = el("dVal"), wfVal = el("wfVal"), iterVal = el("iterVal");
+  const status = el("status");
+  const recomputeBtn = el("recompute");
+  const animateBtn = el("animate");
+
+  function syncLabels() {
+    kVal.textContent = (+kEl.value).toFixed(2);
+    dVal.textContent = String(parseInt(dEl.value,10));
+    wfVal.textContent = (+wfEl.value).toFixed(1);
+    iterVal.textContent = String(parseInt(iterEl.value,10));
+  }
+
+  let sim = null;
+  let animTimer = null;
+  let animOn = false;
+
+  function renderIteration(iterIdx1Based) {
+    if (!sim) return;
+    const it = iterIdx1Based - 1;
+
+    const yrS = stairsXY(t, yr);
+    const yS  = stairsXY(t, sim.y[it]);
+    const uS  = stairsXY(t, sim.u[it]);
+
+    const data = [
+      { ...yrS, mode: "lines", name: "yd (yr)", line: {width: 3}, hovertemplate: "t=%{x:.2f}<br>yd=%{y:.3f}<extra></extra>" },
+      { ...yS,  mode: "lines", name: "y",       line: {width: 3}, hovertemplate: "t=%{x:.2f}<br>y=%{y:.3f}<extra></extra>" },
+      { ...uS,  mode: "lines", name: "u",       line: {width: 3}, hovertemplate: "t=%{x:.2f}<br>u=%{y:.3f}<extra></extra>" },
+    ];
+
+    const layout = {
+      margin: {l: 55, r: 15, t: 10, b: 50},
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      xaxis: { title: "t (s)", range: [0, 10], gridcolor: "rgba(255,255,255,.10)", zerolinecolor: "rgba(255,255,255,.18)" },
+      yaxis: { title: "", range: [-0.2, 1.6], gridcolor: "rgba(255,255,255,.10)", zerolinecolor: "rgba(255,255,255,.18)" },
+      legend: { orientation: "h", x: 0, y: -0.18 },
+      font: { color: "#e9eefc" }
+    };
+
+    Plotly.react("plot", data, layout, {displayModeBar: true, responsive: true});
+
+    status.textContent =
+      `Iteration ${iterIdx1Based}/${itermax}  •  ||e||₂ (iter 1) = ${sim.metrics.eNorm1.toFixed(3)}  •  ||e||₂ (iter ${itermax}) = ${sim.metrics.eNormLast.toFixed(3)}`;
+  }
+
+  function recompute() {
+    syncLabels();
+    const params = {
+      kGain: +kEl.value,
+      delta: parseInt(dEl.value, 10),
+      wf: +wfEl.value
+    };
+    sim = simulateILC(params);
+    renderIteration(parseInt(iterEl.value,10));
+  }
+
+  function stopAnim() {
+    if (animTimer) clearInterval(animTimer);
+    animTimer = null;
+    animOn = false;
+    animateBtn.textContent = "Animate";
+  }
+
+  function startAnim() {
+    stopAnim();
+    animOn = true;
+    animateBtn.textContent = "Stop";
+    animTimer = setInterval(() => {
+      let v = parseInt(iterEl.value,10);
+      v = (v >= itermax) ? 1 : (v + 1);
+      iterEl.value = String(v);
+      syncLabels();
+      renderIteration(v);
+    }, 500);
+  }
+
+  // Events
+  [kEl, dEl, wfEl].forEach(inp => inp.addEventListener("input", syncLabels));
+  iterEl.addEventListener("input", () => { syncLabels(); renderIteration(parseInt(iterEl.value,10)); });
+  recomputeBtn.addEventListener("click", () => { stopAnim(); recompute(); });
+  animateBtn.addEventListener("click", () => {
+    if (!sim) recompute();
+    if (animOn) stopAnim(); else startAnim();
+  });
+
+  // Initial draw
+  syncLabels();
+  recompute();
+})();
+</script>
+</body>
+</html>
