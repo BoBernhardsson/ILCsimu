@@ -9,6 +9,11 @@ It allows students to experiment directly in the browser by adjusting key parame
 
 https://BoBernhardsson.github.io/ILCsimu/
 
+## 📸 Screenshot
+
+![ILC Simulation Screenshot](screenshot.png)
+
+
 ## ⚙️ Adjustable Parameters
 
 - **k** – learning gain  
