@@ -36,7 +36,29 @@
       .grid { grid-template-columns: 1fr; }
       #plot { height: 520px; }
     }
+    .system-box {
+      margin-top: 14px;
+      padding: 12px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+    }
+
+    .system-title {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .system-eq {
+      font-family: "Courier New", monospace;
+      font-size: 14px;
+      color: #ffffff;
+    }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -44,12 +66,7 @@
 
   <div class="grid">
     <div class="card">
-      <div class="small">
-        This reproduces your MATLAB loop:
-        <code>u_{i+1} = filtfilt(lp, u_i + k * shift(e_i, delta))</code>
-        and plots <code>yr</code>, <code>y</code>, <code>u</code> as stairs (Figure 1).
-        Figure(10) is omitted.
-      </div>
+
 
       <label for="k">k (learning gain): <span id="kVal"></span></label>
       <input id="k" type="range" min="0" max="2" step="0.01" value="1">
@@ -70,16 +87,29 @@
 
       <div class="kv">
         <div class="pill">h = 0.1 s</div>
-        <div class="pill">plot: 0–10 s (sim: 0–15 s)</div>
         <div class="pill">itermax = 25</div>
       </div>
 
-      <div class="small" style="margin-top:10px;">
-        Notes:
-        <ul style="margin:8px 0 0 18px; padding:0;">
-          <li><code>filtfilt</code> is implemented as forward IIR filter + reverse IIR filter (zero initial state).</li>
-          <li>Plant discretization is exact ZOH via matrix exponential.</li>
-        </ul>
+      <div class="system-box">
+        <div class="system-title">Plant model</div>
+        <div class="system-eq">
+          \[
+          g(s) = \frac{16}{s^3 + 1.8 s^2 + 16.8 s + 16}
+          \]
+        </div>
+      </div>
+
+      <div class="system-box">
+        <div class="system-title">ILC update law</div>
+        <div class="system-eq">
+          \[
+          \begin{aligned}
+          u_{k+1}[n] &= \operatorname{filtfilt}\!\left(L,\; u_k[n] + \kappa\, e_k[n+\delta]\right) \\
+          e_k[n]     &= y_d[n] - y_k[n] \\
+          L(s)       &= \frac{\omega_f}{s+\omega_f}
+          \end{aligned}
+          \]
+        </div>
       </div>
     </div>
 
@@ -117,12 +147,12 @@
 
   // Reference yr = max(0, min(1, -5:h:5)) extended to Tsim
   const yr = tsim.map((_, i) => {
-    const v = -5 + i*h;
+    const v = -4 + i*h;
     return Math.max(0, Math.min(1, v));
   });
 
-  // u1 = (t > 4.5)
-  const u1 = tsim.map(tt => (tt > 4.5 ? 1 : 0));
+  // u1 = (t > 3.5)
+  const u1 = tsim.map(tt => (tt > 3.5 ? 1 : 0));
 
   // ----------------------------
   // Small matrix utilities (for ZOH discretization via expm)
@@ -253,7 +283,7 @@
   };
 
   // ----------------------------
-  // Plant model (matches your MATLAB g)
+  // Plant model 
   // g(s) = 16 / (s^3 + 1.8 s^2 + 16.8 s + 16)
   // Controllable canonical form:
   // xdot = A x + B u, y = C x
